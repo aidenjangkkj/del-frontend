@@ -9,9 +9,21 @@ import {
   serverTimestamp,
   increment,
 } from "firebase/firestore";
+import { useNavigate, useLocation } from "react-router-dom";
 
+const BankTransferScreen = ({
+  orders,
+  setScreen,
+  address,
+  userId,
+  phone,
+  setOrders,
+}) => {
+  const navigate = useNavigate();
+  const location = useLocation();
+  // PaymentScreen에서 전달한 결제 수단 및 요청 사항 받기
+  const { paymentMethod, specialRequest } = location.state || {};
 
-const BankTransferScreen = ({ orders, setScreen, address, userId, phone,setOrders }) => {
   // 주문 ID 및 총 결제 금액 계산
   const orderId = orders[0].id;
   const overallTotal = orders.reduce((total, order) => {
@@ -22,7 +34,7 @@ const BankTransferScreen = ({ orders, setScreen, address, userId, phone,setOrder
     return total + orderTotal;
   }, 0);
 
-  // sanitizeOrders: 주문 데이터 중 이미지 필드 제거한 새 데이터 생성
+  // sanitizeOrders: 주문 데이터 중 이미지 필드를 제외한 새 데이터 생성
   const sanitizeOrders = orders.map((order) => ({
     id: order.id,
     items: order.items.map(({ id, name, category, price, quantity }) => ({
@@ -38,25 +50,26 @@ const BankTransferScreen = ({ orders, setScreen, address, userId, phone,setOrder
   const sendOrderToFirebase = async () => {
     try {
       const customOrderId = orderId;
-      // 주문 데이터 저장
       await setDoc(doc(db, "orders", customOrderId), {
         orders: sanitizeOrders, // 이미지 제외된 주문 데이터
         overallTotal, // 총 결제 금액
         address, // 선택한 주소 정보
         userId, // 현재 사용자의 uid
         phone, // 현재 사용자의 전화번호
+        payment: paymentMethod, // 결제 수단 (전달받은 값 또는 기본값 "계좌이체")
+        request: specialRequest || "", // 주문 요청 사항
         paid: true,
         createdAt: serverTimestamp(),
       });
 
-      // Firestore의 "users" 컬렉션에서 해당 사용자의 포인트 업데이트 (누적 포인트 증가)
+      // 사용자 포인트 업데이트 (누적 포인트 증가)
       await updateDoc(doc(db, "users", userId), {
         points: increment(overallTotal * 0.1),
       });
 
       alert("결제가 완료되었습니다. 주문 내역이 저장되고 포인트가 적립되었습니다.");
       setOrders([]);
-      setScreen("paid");
+      navigate("/paid");
     } catch (error) {
       console.error("Error saving order: ", error);
       alert("주문 저장에 실패했습니다.");

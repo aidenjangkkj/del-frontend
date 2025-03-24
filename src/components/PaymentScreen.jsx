@@ -4,16 +4,21 @@ import Navbar from "./NavBar";
 import { db } from "../firebaseConfig";
 import {
   doc,
+  getDoc,
   setDoc,
   updateDoc,
   serverTimestamp,
   increment,
 } from "firebase/firestore";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 
 const PaymentScreen = ({ orders, address, userId, phone, setOrders }) => {
-  // 전체 결제 금액 계산: 각 주문의 총합 계산
-  const navigate = useNavigate()
+  const navigate = useNavigate();
+  const location = useLocation();
+  // OrdersScreen에서 전달한 요청 사항 받아오기
+  const { specialRequest } = location.state || {};
+
+  // 전체 결제 금액 계산
   const overallTotal = orders.reduce((total, order) => {
     const orderTotal = order.items.reduce(
       (sum, item) => sum + item.price * item.quantity,
@@ -21,8 +26,9 @@ const PaymentScreen = ({ orders, address, userId, phone, setOrders }) => {
     );
     return total + orderTotal;
   }, 0);
+
   const orderId = orders[0].id;
-  // sanitizeOrders: 주문 데이터 중 이미지 필드 제거한 새 데이터 생성
+  // sanitizeOrders: 이미지 필드를 제외한 주문 데이터 생성
   const sanitizeOrders = orders.map((order) => ({
     id: order.id,
     items: order.items.map(({ id, name, category, price, quantity }) => ({
@@ -34,27 +40,30 @@ const PaymentScreen = ({ orders, address, userId, phone, setOrders }) => {
     })),
   }));
 
-  // 주문 데이터를 Firestore에 저장하고 포인트를 적립하는 함수
-  const sendOrderToFirebase = async () => {
+  // 주문 데이터를 Firestore에 저장하고 포인트 적립 또는 차감하는 함수
+  const sendOrderToFirebase = async (paymentMethod) => {
     try {
       const customOrderId = orderId;
-      // 주문 데이터 저장
       await setDoc(doc(db, "orders", customOrderId), {
-        orders: sanitizeOrders, // 이미지 제외된 주문 데이터
-        overallTotal, // 총 결제 금액
-        address, // 선택한 주소 정보
-        userId, // 현재 사용자의 uid
-        phone, // 현재 사용자의 전화번호
+        orders: sanitizeOrders,
+        overallTotal,
+        address,
+        userId,
+        phone,
+        payment: paymentMethod, // 결제 수단 전달
+        request: specialRequest, // 요청 사항 전달
         paid: true,
         createdAt: serverTimestamp(),
       });
 
-      // Firestore의 "users" 컬렉션에서 해당 사용자의 포인트 업데이트 (누적 포인트 증가)
-      await updateDoc(doc(db, "users", userId), {
-        points: increment(overallTotal * 0.1),
-      });
+      // 포인트 결제가 아닌 경우, 결제 금액의 10%를 포인트로 적립
+      if (paymentMethod !== "포인트 결제") {
+        await updateDoc(doc(db, "users", userId), {
+          points: increment(overallTotal * 0.1),
+        });
+      }
 
-      alert("결제가 완료되었습니다. 주문 내역이 저장되고 포인트가 적립되었습니다.");
+      alert("결제가 완료되었습니다. 주문 내역이 저장되었습니다.");
       setOrders([]);
       navigate("/paid");
     } catch (error) {
@@ -63,32 +72,42 @@ const PaymentScreen = ({ orders, address, userId, phone, setOrders }) => {
     }
   };
 
-  // 다른 결제 방식은 그대로 유지 (예시)
-  const handleTossPayment = async () => {
-    alert("토스 간편결제를 선택하셨습니다.");
-    // 결제 처리 로직...
-  };
-
-  const handleCardPayment = async () => {
-    alert("카드 결제를 선택하셨습니다.");
-    // 결제 처리 로직...
-  };
-
   const handleOnsiteCashPayment = async () => {
     alert("현장 현금 결제를 선택하셨습니다.");
-    await sendOrderToFirebase();
-    // 결제 처리 로직...
+    await sendOrderToFirebase("현장 현금 결제");
   };
 
   const handleOnsiteCardPayment = async () => {
     alert("현장 카드 결제를 선택하셨습니다.");
-    await sendOrderToFirebase();
-    // 결제 처리 로직...
+    await sendOrderToFirebase("현장 카드 결제");
   };
 
-  // 계좌이체 버튼 클릭 시 BankTransferScreen으로 이동
-  const handleKakaoPayment = () => {
-    navigate("/bankTransfer");
+  // 포인트 결제: 사용자의 포인트가 충분한지 확인 후 차감
+  const handlePointPayment = async () => {
+    alert("포인트 결제를 선택하셨습니다.");
+    const userDocRef = doc(db, "users", userId);
+    const userSnap = await getDoc(userDocRef);
+    if (userSnap.exists()) {
+      const currentPoints = userSnap.data().points || 0;
+      // 여기서는 포인트와 결제 금액의 단위가 동일하다고 가정합니다.
+      if (currentPoints < overallTotal) {
+        alert("포인트가 부족합니다.");
+        return;
+      }
+      // 충분한 포인트가 있다면 결제 금액만큼 차감
+      await updateDoc(userDocRef, { points: increment(-overallTotal) });
+      // 포인트 결제는 별도의 포인트 적립 없이 주문 저장
+      await sendOrderToFirebase("포인트 결제");
+    } else {
+      alert("사용자 정보를 불러오지 못했습니다.");
+    }
+  };
+
+  // 계좌이체 버튼 클릭 시 BankTransferScreen으로 이동하며 결제 수단을 state로 전달
+  const handleBankTransfer = () => {
+    navigate("/bank-transfer", {
+      state: { paymentMethod: "계좌이체", specialRequest },
+    });
   };
 
   return (
@@ -96,7 +115,9 @@ const PaymentScreen = ({ orders, address, userId, phone, setOrders }) => {
       <header className="bg-white p-4 rounded-lg shadow-md text-center">
         <h1 className="text-xl font-bold">결제 화면</h1>
         {address ? (
-          <p className="text-gray-500 mt-2 font-bold">배달 주소: {address}</p>
+          <p className="text-gray-500 mt-2 font-bold">
+            배달 주소: {address}
+          </p>
         ) : (
           <p className="text-gray-500 mt-2">주소가 설정되지 않았습니다.</p>
         )}
@@ -112,25 +133,16 @@ const PaymentScreen = ({ orders, address, userId, phone, setOrders }) => {
         <div className="flex flex-col space-y-2">
           <button
             className="w-full bg-yellow-500 text-white p-4 rounded-lg"
-            onClick={handleKakaoPayment}
+            onClick={handleBankTransfer}
           >
             계좌이체
           </button>
-          {/* 필요 시 아래 주석 해제 */}
-          {/* 
           <button
             className="w-full bg-blue-500 text-white p-4 rounded-lg"
-            onClick={handleTossPayment}
+            onClick={handlePointPayment}
           >
-            토스 간편결제
+            포인트 결제
           </button>
-          <button
-            className="w-full bg-green-500 text-white p-4 rounded-lg"
-            onClick={handleCardPayment}
-          >
-            카드 결제
-          </button> 
-          */}
           <div className="flex space-x-2">
             <button
               className="w-1/2 bg-purple-500 text-white p-4 rounded-lg"
@@ -147,7 +159,7 @@ const PaymentScreen = ({ orders, address, userId, phone, setOrders }) => {
           </div>
         </div>
       </div>
-      <Navbar/>
+      <Navbar />
     </div>
   );
 };
